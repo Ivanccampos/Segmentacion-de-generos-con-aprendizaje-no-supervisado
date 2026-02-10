@@ -4,7 +4,7 @@
     <title>Recomendador de Películas</title>
 </head>
 <body>
-    <h1>🎬 Perfil del Usuario</h1>
+    <h1>Perfil del Usuario</h1>
 
     <form action="/predict" method="post">
         <label>Rating promedio:</label>
