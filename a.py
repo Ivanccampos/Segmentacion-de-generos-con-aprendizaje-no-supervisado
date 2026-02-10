@@ -32,7 +32,10 @@ def load_models():
 
 @st.cache_data
 def load_movies():
-    return pd.read_csv("movies_with_clusters.csv")
+    df = pd.read_csv("movies_with_clusters.csv")
+    # SOLUCIÓN 1: Eliminar duplicados del CSV original
+    df = df.drop_duplicates(subset=["title"]).reset_index(drop=True)
+    return df
 
 
 kmeans, scaler, all_genre_cols = load_models()
@@ -57,6 +60,9 @@ st.subheader("🎥 Películas vistas por el usuario")
 MAX_MOVIES = 6
 user_selections = []
 
+# Mantenemos un registro de títulos ya seleccionados para que no se repitan en los selectbox
+selected_titles = []
+
 for i in range(MAX_MOVIES):
     with st.expander(f"Película {i + 1}", expanded=(i == 0)):
 
@@ -67,8 +73,12 @@ for i in range(MAX_MOVIES):
         )
 
         if genre:
+            # SOLUCIÓN 2: Filtrar películas por género Y que no hayan sido seleccionadas antes
             movies_by_genre = (
-                df_movies[df_movies["genres"].str.contains(genre, na=False)]
+                df_movies[
+                    df_movies["genres"].str.contains(genre, na=False) & 
+                    ~df_movies["title"].isin(selected_titles)
+                ]
                 ["title"]
                 .sort_values()
                 .tolist()
@@ -95,11 +105,13 @@ for i in range(MAX_MOVIES):
                         "title": movie,
                         "rating": rating
                     })
+                    # Añadir a la lista de "ya elegidas" para el siguiente bloque
+                    selected_titles.append(movie)
 
 # --------------------------------------------------
 # Número de recomendaciones
 # --------------------------------------------------
-st.subheader("🎯 Recomendaciones")
+st.subheader("🎯 Ajustes de recomendación")
 
 top_n = st.slider(
     "Número de recomendaciones",
@@ -115,7 +127,6 @@ recommend = st.button("🍿 Recomendar películas")
 # --------------------------------------------------
 def build_user_df(selections, df_movies):
     rows = []
-
     for sel in selections:
         row = df_movies[df_movies["title"] == sel["title"]].iloc[0]
         rows.append({
@@ -124,27 +135,28 @@ def build_user_df(selections, df_movies):
             "genres": row["genres"],
             "rating": sel["rating"]
         })
-
     return pd.DataFrame(rows)
 
 
 def build_user_vector(user_df, all_genre_cols):
     avg_rating = user_df["rating"].mean()
 
-    genres_ohe = user_df["genres"].str.get_dummies(sep="|")
-    genre_profile = genres_ohe.sum().to_frame().T
+    # Usar un diccionario para asegurar que todas las columnas de géneros existan
+    vector_dict = {col: 0 for col in all_genre_cols}
+    vector_dict["rating"] = avg_rating
 
-    aligned_genres = pd.DataFrame(0, index=[0], columns=all_genre_cols)
-    for col in genre_profile.columns:
-        if col in aligned_genres.columns:
-            aligned_genres[col] = genre_profile[col].values[0]
+    for genres in user_df["genres"]:
+        for g in genres.split("|"):
+            if g in vector_dict:
+                # Sumamos la presencia del género
+                vector_dict[g] += 1
 
-    user_vector = pd.concat(
-        [pd.DataFrame({"rating": [avg_rating]}), aligned_genres],
-        axis=1
-    )
-
-    return user_vector
+    # Convertir a DataFrame asegurando el orden correcto de las columnas
+    user_vector = pd.DataFrame([vector_dict])
+    
+    # Reordenar columnas para que coincidan exactamente con el scaler
+    cols_order = ["rating"] + all_genre_cols
+    return user_vector[cols_order]
 
 # --------------------------------------------------
 # Recomendación final
@@ -153,23 +165,34 @@ if recommend:
     if len(user_selections) == 0:
         st.error("❌ Selecciona al menos una película.")
     else:
-        user_df = build_user_df(user_selections, df_movies)
+        with st.spinner('Calculando tus recomendaciones...'):
+            user_df = build_user_df(user_selections, df_movies)
+            user_vector = build_user_vector(user_df, all_genre_cols)
+            
+            # Escalar y Predecir Cluster
+            user_scaled = scaler.transform(user_vector)
+            cluster = kmeans.predict(user_scaled)[0]
 
-        user_vector = build_user_vector(user_df, all_genre_cols)
-        user_scaled = scaler.transform(user_vector)
+            # Filtrar películas que no ha visto
+            seen_ids = set(user_df["movieId"])
+            
+            # Obtener recomendaciones del mismo cluster
+            recommendations = (
+                df_movies[df_movies["cluster_labels"] == cluster]
+                .loc[~df_movies["movieId"].isin(seen_ids)]
+                .head(top_n)
+            )
 
-        cluster = kmeans.predict(user_scaled)[0]
+            st.subheader("🎬 Películas recomendadas para ti")
+            if not recommendations.empty:
+                st.dataframe(
+                    recommendations[["title", "genres"]],
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("No encontramos películas adicionales en este cluster.")
 
-        seen_ids = set(user_df["movieId"])
-
-        recommendations = (
-            df_movies[df_movies["cluster_labels"] == cluster]
-            .loc[~df_movies["movieId"].isin(seen_ids)]
-            .head(top_n)
-        )
-
-        st.subheader("🎬 Películas recomendadas para ti")
-        st.dataframe(
-            recommendations[["title", "genres"]],
-            use_container_width=True
-        )
+# Pie de página
+st.divider()
+st.caption("Sistema de recomendación basado en K-Means Clustering.")
