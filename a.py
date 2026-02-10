@@ -1,84 +1,175 @@
 import streamlit as st
 import pandas as pd
+import pickle
 
-# -------------------------
-# Carga de datos
-# -------------------------
+# --------------------------------------------------
+# Configuración de la página
+# --------------------------------------------------
+st.set_page_config(
+    page_title="🎬 Recomendador de Películas",
+    layout="centered"
+)
+
+st.title("🎬 Recomendador de Películas")
+st.write("Selecciona películas que te gustaron y te recomendaré otras similares.")
+
+# --------------------------------------------------
+# Cargar modelos y datos
+# --------------------------------------------------
+@st.cache_resource
+def load_models():
+    with open("kmeans_model.pkl", "rb") as f:
+        kmeans = pickle.load(f)
+
+    with open("scaler.pkl", "rb") as f:
+        scaler = pickle.load(f)
+
+    with open("all_genre_cols.pkl", "rb") as f:
+        all_genre_cols = pickle.load(f)
+
+    return kmeans, scaler, all_genre_cols
+
 
 @st.cache_data
 def load_movies():
     return pd.read_csv("movies_with_clusters.csv")
 
+
+kmeans, scaler, all_genre_cols = load_models()
 df_movies = load_movies()
 
-# -------------------------
-# Inicializamos sesión
-# -------------------------
+# --------------------------------------------------
+# Obtener lista de géneros disponibles
+# --------------------------------------------------
+all_genres = sorted(
+    set(
+        genre
+        for g in df_movies["genres"].dropna()
+        for genre in g.split("|")
+    )
+)
 
-if "user_selections" not in st.session_state:
-    st.session_state.user_selections = []
+# --------------------------------------------------
+# Selección de películas del usuario (hasta 6)
+# --------------------------------------------------
+st.subheader("🎥 Películas vistas por el usuario")
 
-if "selected_titles" not in st.session_state:
-    st.session_state.selected_titles = set()
+MAX_MOVIES = 6
+user_selections = []
 
-if "current_step" not in st.session_state:
-    st.session_state.current_step = 0
+for i in range(MAX_MOVIES):
+    with st.expander(f"Película {i + 1}", expanded=(i == 0)):
 
-MAX_SELECTIONS = 6
+        genre = st.selectbox(
+            "Selecciona un género",
+            [""] + all_genres,
+            key=f"genre_{i}"
+        )
 
-# -------------------------
+        if genre:
+            movies_by_genre = (
+                df_movies[df_movies["genres"].str.contains(genre, na=False)]
+                ["title"]
+                .sort_values()
+                .tolist()
+            )
+
+            if movies_by_genre:
+                movie = st.selectbox(
+                    "Selecciona una película",
+                    [""] + movies_by_genre,
+                    key=f"movie_{i}"
+                )
+
+                if movie:
+                    rating = st.slider(
+                        "Tu valoración",
+                        min_value=0.5,
+                        max_value=5.0,
+                        value=3.0,
+                        step=0.5,
+                        key=f"rating_{i}"
+                    )
+
+                    user_selections.append({
+                        "title": movie,
+                        "rating": rating
+                    })
+
+# --------------------------------------------------
+# Número de recomendaciones
+# --------------------------------------------------
+st.subheader("🎯 Recomendaciones")
+
+top_n = st.slider(
+    "Número de recomendaciones",
+    min_value=5,
+    max_value=20,
+    value=10
+)
+
+recommend = st.button("🍿 Recomendar películas")
+
+# --------------------------------------------------
 # Funciones auxiliares
-# -------------------------
+# --------------------------------------------------
+def build_user_df(selections, df_movies):
+    rows = []
 
-def get_available_movies(genre):
-    filtered = df_movies[df_movies[genre] == 1]
-    return [t for t in filtered['title'].tolist() if t not in st.session_state.selected_titles]
+    for sel in selections:
+        row = df_movies[df_movies["title"] == sel["title"]].iloc[0]
+        rows.append({
+            "movieId": row["movieId"],
+            "title": row["title"],
+            "genres": row["genres"],
+            "rating": sel["rating"]
+        })
 
-# -------------------------
-# Interfaz principal
-# -------------------------
+    return pd.DataFrame(rows)
 
-st.title("Recomendador de películas")
 
-# Selección de película actual
-if st.session_state.current_step < MAX_SELECTIONS:
-    st.subheader(f"Selección {st.session_state.current_step + 1}")
-    
-    genre = st.selectbox(
-        "Selecciona un género:",
-        df_movies.columns[1:-1],  # asumimos que la primera columna es 'title' y la última quizá 'cluster'
-        key=f"genre_{st.session_state.current_step}"
+def build_user_vector(user_df, all_genre_cols):
+    avg_rating = user_df["rating"].mean()
+
+    genres_ohe = user_df["genres"].str.get_dummies(sep="|")
+    genre_profile = genres_ohe.sum().to_frame().T
+
+    aligned_genres = pd.DataFrame(0, index=[0], columns=all_genre_cols)
+    for col in genre_profile.columns:
+        if col in aligned_genres.columns:
+            aligned_genres[col] = genre_profile[col].values[0]
+
+    user_vector = pd.concat(
+        [pd.DataFrame({"rating": [avg_rating]}), aligned_genres],
+        axis=1
     )
 
-    available_movies = get_available_movies(genre)
-    
-    if available_movies:
-        movie = st.selectbox("Selecciona una película:", available_movies, key=f"movie_{st.session_state.current_step}")
-        rating = st.slider("Indica tu nota (rating):", 1, 10, 5, key=f"rating_{st.session_state.current_step}")
-        
-        if st.button("Añadir película"):
-            st.session_state.user_selections.append({
-                "title": movie,
-                "rating": rating
-            })
-            st.session_state.selected_titles.add(movie)
-            st.session_state.current_step += 1
-            st.experimental_rerun()  # recarga la app para mostrar la siguiente selección
+    return user_vector
+
+# --------------------------------------------------
+# Recomendación final
+# --------------------------------------------------
+if recommend:
+    if len(user_selections) == 0:
+        st.error("❌ Selecciona al menos una película.")
     else:
-        st.info("No quedan películas disponibles en este género.")
-else:
-    st.success("¡Has seleccionado todas tus películas!")
+        user_df = build_user_df(user_selections, df_movies)
 
-# -------------------------
-# Recomendaciones
-# -------------------------
+        user_vector = build_user_vector(user_df, all_genre_cols)
+        user_scaled = scaler.transform(user_vector)
 
-if st.session_state.user_selections:
-    n_recs = st.number_input("Número de recomendaciones:", min_value=1, max_value=20, value=5)
-    if st.button("Recomendar"):
-        st.subheader("Recomendaciones")
-        recommended = df_movies[~df_movies['title'].isin(st.session_state.selected_titles)].sample(
-            n=min(n_recs, len(df_movies))
+        cluster = kmeans.predict(user_scaled)[0]
+
+        seen_ids = set(user_df["movieId"])
+
+        recommendations = (
+            df_movies[df_movies["cluster_labels"] == cluster]
+            .loc[~df_movies["movieId"].isin(seen_ids)]
+            .head(top_n)
         )
-        for idx, row in recommended.iterrows():
-            st.write(f"{row['title']}")
+
+        st.subheader("🎬 Películas recomendadas para ti")
+        st.dataframe(
+            recommendations[["title", "genres"]],
+            use_container_width=True
+        )
