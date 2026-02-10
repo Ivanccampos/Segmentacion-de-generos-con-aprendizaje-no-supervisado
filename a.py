@@ -41,7 +41,6 @@ def add_local_bg(image_file):
         f"""
         <style>
         .stApp {{
-            background-image: url("data:image/png;base64,{encoded_string}");
             background-size: cover;
             background-repeat: no-repeat;
             background-position: center;
@@ -72,7 +71,6 @@ def add_local_bg(image_file):
     )
 
 
-add_local_bg("movies_bg.png")
 
 st.title("🎬 Recomendador de Películas")
 
