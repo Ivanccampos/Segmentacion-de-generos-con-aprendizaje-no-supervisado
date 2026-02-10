@@ -56,6 +56,7 @@ st.subheader("🎥 Películas vistas por el usuario")
 
 MAX_MOVIES = 6
 user_selections = []
+selected_titles = set()  # para evitar repeticiones
 
 for i in range(MAX_MOVIES):
     with st.expander(f"Película {i + 1}", expanded=(i == 0)):
@@ -69,6 +70,7 @@ for i in range(MAX_MOVIES):
         if genre:
             movies_by_genre = (
                 df_movies[df_movies["genres"].str.contains(genre, na=False)]
+                .loc[~df_movies["title"].isin(selected_titles)]  # evita repeticiones
                 ["title"]
                 .sort_values()
                 .tolist()
@@ -95,6 +97,7 @@ for i in range(MAX_MOVIES):
                         "title": movie,
                         "rating": rating
                     })
+                    selected_titles.add(movie)  # añadimos para no repetir
 
 # --------------------------------------------------
 # Número de recomendaciones
@@ -154,17 +157,17 @@ if recommend:
         st.error("❌ Selecciona al menos una película.")
     else:
         user_df = build_user_df(user_selections, df_movies)
-
         user_vector = build_user_vector(user_df, all_genre_cols)
         user_scaled = scaler.transform(user_vector)
-
         cluster = kmeans.predict(user_scaled)[0]
 
         seen_ids = set(user_df["movieId"])
 
+        # Evitar que se repitan títulos en la recomendación
         recommendations = (
             df_movies[df_movies["cluster_labels"] == cluster]
             .loc[~df_movies["movieId"].isin(seen_ids)]
+            .drop_duplicates(subset="title")  # no repetir títulos
             .head(top_n)
         )
 
